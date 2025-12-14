@@ -1,30 +1,401 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #define FILE_NAME "inventory.csv"
+#define BACKUP_FILE "inventory_backup.csv"
+#define LOW_STOCK_THRESHOLD 5  // configurable low stock alert
 
 struct Product {
     int id;
     char name[50];
-    char quantity[20]; 
-    float price;
+    char quantity[20];  // e.g. "5kg"
+    float unitPrice;
+    float totalPrice;
 };
 
+// Function prototypes
+int parseQuantityNumber(const char *qtyStr);
+int isValidName(const char *name);
+void backupInventory();
+void restoreInventory();
+void openExcelFile();
+void openExcelIfExists();
+int confirmAction(const char *action);
 void addProduct();
 void viewProducts();
 void updateProduct();
 void deleteProduct();
 void generateReport();
-void openExcelFile();
 void menu();
-void openExcelIfExists();
 
-int main() {
-    menu();
-    return 0;
+// Extract numeric part from quantity
+int parseQuantityNumber(const char *qtyStr) {
+    int num = 0;
+    sscanf(qtyStr, "%d", &num);
+    return num;
 }
 
+// Check if name contains only letters and spaces
+int isValidName(const char *name) {
+    for (int i = 0; name[i]; i++) {
+        if (!isalpha(name[i]) && name[i] != ' ')
+            return 0; // invalid character
+    }
+    return 1;
+}
+
+// Backup inventory
+void backupInventory() {
+    FILE *src = fopen(FILE_NAME, "r");
+    FILE *dest = fopen(BACKUP_FILE, "w");
+
+    if (!src) { printf("No inventory to backup.\n"); return; }
+    if (!dest) { printf("Backup failed!\n"); fclose(src); return; }
+
+    char line[200];
+    while (fgets(line, sizeof(line), src)) {
+        fputs(line, dest);
+    }
+    fclose(src);
+    fclose(dest);
+    printf("Inventory backed up successfully!\n");
+}
+
+// Restore inventory
+void restoreInventory() {
+    FILE *src = fopen(FILE_NAME, "r");
+    if (src) { fclose(src); return; } // main file exists
+
+    src = fopen(BACKUP_FILE, "r");
+    if (!src) { printf("No backup found to restore.\n"); return; }
+
+    FILE *dest = fopen(FILE_NAME, "w");
+    char line[200];
+    while (fgets(line, sizeof(line), src)) {
+        fputs(line, dest);
+    }
+    fclose(src);
+    fclose(dest);
+    printf("Inventory restored from backup.\n");
+}
+
+// Open Excel
+void openExcelFile() {
+    FILE *fp = fopen(FILE_NAME, "r");
+    if (!fp) { printf("Inventory file not found!\n"); return; }
+    fclose(fp);
+    system("start excel.exe /r /n inventory.csv");
+}
+
+void openExcelIfExists() {
+    FILE *fp = fopen(FILE_NAME, "r");
+    if (fp) { fclose(fp); system("start excel.exe /r /n inventory.csv"); }
+}
+
+// Confirmation prompt
+int confirmAction(const char *action) {
+    char confirm;
+    printf("Are you sure you want to %s the product? (y/n): ", action);
+    scanf(" %c", &confirm);
+    getchar();
+    return (confirm == 'y' || confirm == 'Y');
+}
+
+// Add Product
+void addProduct() {
+    struct Product p;
+    FILE *fp;
+    int fileExists = 0;
+    int duplicate = 0;
+
+    // Check if file exists
+    fp = fopen(FILE_NAME, "r");
+    if (fp != NULL) { fileExists = 1; fclose(fp); }
+
+    // Enter Product ID
+    while (1) {
+        printf("Enter Product ID (positive integer): ");
+        if (scanf("%d", &p.id) == 1 && p.id > 0) {
+            getchar(); // consume leftover newline
+            break;
+        } else {
+            printf("Invalid ID! Enter a positive number.\n");
+            while(getchar() != '\n'); // clear invalid input
+        }
+    }
+
+    // Check for duplicates
+    if (fileExists) {
+        fp = fopen(FILE_NAME, "r");
+        if (!fp) { printf("Error opening file!\n"); return; }
+
+        char line[200];
+        fgets(line, sizeof(line), fp); // skip header
+        int id;
+        char name[50], quantity[20];
+        float unitPrice, totalPrice;
+
+        while (fgets(line, sizeof(line), fp)) {
+            line[strcspn(line, "\r\n")] = 0;
+            if (sscanf(line, "%d,%49[^,],%19[^,],%f,%f", &id, name, quantity, &unitPrice, &totalPrice) == 5) {
+                if (id == p.id) {
+                    duplicate = 1;
+                    break;
+                }
+            }
+        }
+        fclose(fp);
+
+        if (duplicate) {
+            int option;
+            printf("Product ID already exists!\n");
+            printf("1. Update existing product\n2. Exit without adding\n");
+            printf("Enter your choice: ");
+            scanf("%d", &option);
+            getchar();
+
+            if (option == 1) {
+                updateProduct();
+            }
+            return;
+        }
+    }
+
+    // Enter product name with validation
+    do {
+        printf("Enter Product Name: ");
+        fgets(p.name, sizeof(p.name), stdin);
+        p.name[strcspn(p.name, "\n")] = '\0';
+        if (!isValidName(p.name))
+            printf("Invalid name! Only letters and spaces allowed.\n");
+    } while (!isValidName(p.name));
+
+    // Enter quantity with validation (must start with a number)
+    while (1) {
+        printf("Enter Quantity (e.g. 5, 5kg, 3box): ");
+        fgets(p.quantity, sizeof(p.quantity), stdin);
+        p.quantity[strcspn(p.quantity, "\n")] = '\0';
+        if (parseQuantityNumber(p.quantity) > 0)
+            break;
+        else
+            printf("Invalid quantity! Must start with a positive number.\n");
+    }
+
+    // Enter unit price with validation
+    while (1) {
+        printf("Enter Unit Price: ");
+        if (scanf("%f", &p.unitPrice) == 1 && p.unitPrice >= 0) {
+            getchar();
+            break;
+        } else {
+            printf("Invalid price! Enter a valid number.\n");
+            while(getchar() != '\n');
+        }
+    }
+
+    p.totalPrice = p.unitPrice * parseQuantityNumber(p.quantity);
+
+    // Open file to append
+    fp = fopen(FILE_NAME, "a");
+    if (!fp) { printf("Error opening file!\n"); return; }
+    if (!fileExists)
+        fprintf(fp, "Product ID,Product Name,Quantity,Unit Price,Total Price\n");
+
+    fprintf(fp, "%d,%s,%s,%.2f,%.2f\n",
+            p.id, p.name, p.quantity, p.unitPrice, p.totalPrice);
+    fclose(fp);
+
+    printf("Product added successfully!\n");
+    backupInventory();
+}
+
+// View Products
+void viewProducts() {
+    struct Product p;
+    FILE *fp = fopen(FILE_NAME, "r");
+    if (!fp) { printf("No inventory data found!\n"); return; }
+
+    char line[200];
+    if (!fgets(line, sizeof(line), fp)) {
+        printf("Inventory file is empty!\n");
+        fclose(fp);
+        return;
+    }
+
+    printf("\n%-10s %-20s %-15s %-15s %-15s\n",
+           "Product ID", "Product Name", "Quantity", "Unit Price", "Total Price");
+    printf("---------------------------------------------------------------------\n");
+
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = 0;
+
+        if (sscanf(line, "%d,%49[^,],%19[^,],%f,%f",
+                   &p.id, p.name, p.quantity, &p.unitPrice, &p.totalPrice) == 5) {
+
+            int qtyNum = parseQuantityNumber(p.quantity);
+
+            printf("%-10d %-20s %-15s %-15.2f %-15.2f",
+                   p.id, p.name, p.quantity, p.unitPrice, p.totalPrice);
+
+            if (qtyNum > 0 && qtyNum <= LOW_STOCK_THRESHOLD)
+                printf("  <-- Low stock!");
+
+            printf("\n");
+        }
+    }
+    fclose(fp);
+}
+
+// Update Product
+void updateProduct() {
+    struct Product p;
+    FILE *fp = fopen(FILE_NAME, "r");
+    FILE *temp = fopen("temp.csv", "w");
+    int id, found = 0;
+
+    if (!fp || !temp) { printf("Error opening file!\n"); return; }
+    char header[200]; fgets(header, sizeof(header), fp);
+    fprintf(temp, "%s", header);
+
+    printf("Enter Product ID to update: ");
+    scanf("%d", &id);
+    getchar();
+
+    char line[200];
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (sscanf(line, "%d,%49[^,],%19[^,],%f,%f",
+                   &p.id, p.name, p.quantity, &p.unitPrice, &p.totalPrice) == 5) {
+
+            if (p.id == id) {
+                // Update quantity
+                while (1) {
+                    printf("Enter new Quantity (e.g. 5, 5kg, 3box): ");
+                    fgets(p.quantity, sizeof(p.quantity), stdin);
+                    p.quantity[strcspn(p.quantity, "\n")] = '\0';
+                    if (parseQuantityNumber(p.quantity) > 0)
+                        break;
+                    else
+                        printf("Invalid quantity! Must start with a positive number.\n");
+                }
+
+                // Update unit price
+                while (1) {
+                    printf("Enter new Unit Price: ");
+                    if (scanf("%f", &p.unitPrice) == 1 && p.unitPrice >= 0) {
+                        getchar();
+                        break;
+                    } else {
+                        printf("Invalid price! Enter a valid number.\n");
+                        while(getchar() != '\n');
+                    }
+                }
+
+                p.totalPrice = p.unitPrice * parseQuantityNumber(p.quantity);
+                found = 1;
+            }
+
+            fprintf(temp, "%d,%s,%s,%.2f,%.2f\n",
+                    p.id, p.name, p.quantity, p.unitPrice, p.totalPrice);
+        }
+    }
+
+    fclose(fp);
+    fclose(temp);
+    remove(FILE_NAME);
+    rename("temp.csv", FILE_NAME);
+
+    if (found) {
+        printf("Product updated successfully!\n");
+        backupInventory();
+        openExcelIfExists();
+    } else {
+        printf("Product not found!\n");
+    }
+}
+
+// Delete Product
+void deleteProduct() {
+    struct Product p;
+    FILE *fp = fopen(FILE_NAME, "r");
+    FILE *temp = fopen("temp.csv", "w");
+    int id, found = 0;
+
+    if (!fp || !temp) { printf("Error opening file!\n"); return; }
+    char header[200]; fgets(header, sizeof(header), fp);
+    fprintf(temp, "%s", header);
+
+    printf("Enter Product ID to delete: ");
+    scanf("%d", &id);
+    getchar();
+
+    char line[200];
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = 0;
+
+        if (sscanf(line, "%d,%49[^,],%19[^,],%f,%f",
+                   &p.id, p.name, p.quantity, &p.unitPrice, &p.totalPrice) == 5) {
+
+            if (p.id != id) {
+                fprintf(temp, "%d,%s,%s,%.2f,%.2f\n",
+                        p.id, p.name, p.quantity, p.unitPrice, p.totalPrice);
+            } else {
+                found = 1;
+            }
+        }
+    }
+
+    fclose(fp);
+    fclose(temp);
+    remove(FILE_NAME);
+    rename("temp.csv", FILE_NAME);
+
+    if (found) {
+        printf("Product deleted successfully!\n");
+        backupInventory();
+    } else {
+        printf("Product not found!\n");
+    }
+}
+
+// Generate Report
+void generateReport() {
+    FILE *fp = fopen(FILE_NAME, "r"); 
+    if (!fp) { printf("No inventory data found!\n"); return; }
+
+    char line[200];
+    if (!fgets(line, sizeof(line), fp)) { 
+        printf("Inventory file is empty!\n"); 
+        fclose(fp);
+        return; 
+    }
+
+    printf("\n===== INVENTORY REPORT =====\n");
+    printf("%-10s %-20s %-15s %-15s %-15s\n",
+           "Product ID", "Product Name", "Quantity", "Unit Price", "Total Price");
+    printf("---------------------------------------------------------------------\n");
+
+    struct Product p;
+    float grandTotal = 0.0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (sscanf(line, "%d,%49[^,],%19[^,],%f,%f",
+                   &p.id, p.name, p.quantity, &p.unitPrice, &p.totalPrice) == 5) {
+            printf("%-10d %-20s %-15s %-15.2f %-15.2f\n",
+                   p.id, p.name, p.quantity, p.unitPrice, p.totalPrice);
+            grandTotal += p.totalPrice;
+        }
+    }
+
+    printf("---------------------------------------------------------------------\n");
+    
+    fclose(fp);
+}
+
+// Menu
 void menu() {
     int choice;
     while (1) {
@@ -35,213 +406,34 @@ void menu() {
         printf("4. Delete Product\n");
         printf("5. Generate Report\n");
         printf("6. Open Inventory File in Excel\n");
-        printf("7. Exit\n");
+        printf("7. Backup Inventory\n");
+        printf("8. Restore Inventory from Backup\n");
+        printf("9. Exit\n");
         printf("Enter your choice: ");
         scanf("%d", &choice);
-        getchar(); 
+        getchar();
 
         switch (choice) {
             case 1: addProduct(); break;
             case 2: viewProducts(); break;
-            case 3: updateProduct(); openExcelIfExists(); break;
-            case 4: deleteProduct(); break;
+            case 3:
+                if (confirmAction("update")) updateProduct();
+                break;
+            case 4:
+                if (confirmAction("delete")) deleteProduct();
+                break;
             case 5: generateReport(); break;
             case 6: openExcelFile(); break;
-            case 7: exit(0);
+            case 7: backupInventory(); break;
+            case 8: restoreInventory(); break;
+            case 9: exit(0);
             default: printf("Invalid choice! Please try again.\n");
         }
     }
 }
 
-void addProduct() {
-    struct Product p;
-    FILE *fp;
-    int fileExists = 0;
-
-    fp = fopen(FILE_NAME, "r");
-    if (fp != NULL) {
-        fileExists = 1;
-        fclose(fp);
-    }
-
-    fp = fopen(FILE_NAME, "a");
-    if (fp == NULL) {
-        printf("Error opening file!\n");
-        return;
-    }
-
-    if (!fileExists) {
-        fprintf(fp, "ID,Name,Quantity,Price\n");
-    }
-
-    printf("Enter Product ID: ");
-    scanf("%d", &p.id);
-    getchar();
-
-    printf("Enter Product Name: ");
-    fgets(p.name, sizeof(p.name), stdin);
-    p.name[strcspn(p.name, "\n")] = '\0';
-
-    printf("Enter Quantity (e.g., 5, 5kg, 5box, 5liter): ");
-    fgets(p.quantity, sizeof(p.quantity), stdin);
-    p.quantity[strcspn(p.quantity, "\n")] = '\0';
-
-    printf("Enter Price: ");
-    scanf("%f", &p.price);
-
-    fprintf(fp, "%d,%s,%s,%.2f\n", p.id, p.name, p.quantity, p.price);
-    fclose(fp);
-
-    printf("Product added successfully!\n");
-}
-
-void viewProducts() {
-    struct Product p;
-    FILE *fp = fopen(FILE_NAME, "r");
-
-    if (fp == NULL) {
-        printf("No inventory data found!\n");
-        return;
-    }
-
-    printf("\n%-10s %-20s %-15s %-10s\n", "ID", "Name", "Quantity", "Price");
-    printf("-----------------------------------------------------------\n");
-
-    char header[100];
-    fgets(header, sizeof(header), fp); 
-
-    while (fscanf(fp, "%d,%[^,],%[^,],%f\n", &p.id, p.name, p.quantity, &p.price) != EOF) {
-        printf("%-10d %-20s %-15s %-10.2f\n", p.id, p.name, p.quantity, p.price);
-    }
-
-    fclose(fp);
-}
-
-void updateProduct() {
-    struct Product p;
-    FILE *fp = fopen(FILE_NAME, "r");
-    FILE *temp = fopen("temp.csv", "w");
-    int id, found = 0;
-
-    if (fp == NULL || temp == NULL) {
-        printf("Error opening file!\n");
-        return;
-    }
-
-    char header[100];
-    fgets(header, sizeof(header), fp);
-    fprintf(temp, "%s", header);
-
-    printf("Enter Product ID to update: ");
-    scanf("%d", &id);
-    getchar();
-
-    while (fscanf(fp, "%d,%[^,],%[^,],%f\n", &p.id, p.name, p.quantity, &p.price) != EOF) {
-        if (p.id == id) {
-            printf("Enter new quantity (e.g., 10kg, 5box): ");
-            fgets(p.quantity, sizeof(p.quantity), stdin);
-            p.quantity[strcspn(p.quantity, "\n")] = '\0';
-
-            printf("Enter new price: ");
-            scanf("%f", &p.price);
-            getchar();
-            found = 1;
-        }
-        fprintf(temp, "%d,%s,%s,%.2f\n", p.id, p.name, p.quantity, p.price);
-    }
-
-    fclose(fp);
-    fclose(temp);
-    remove(FILE_NAME);
-    rename("temp.csv", FILE_NAME);
-
-    if (found)
-        printf("Product updated successfully!\n");
-    else
-        printf("Product not found!\n");
-}
-
-void deleteProduct() {
-    struct Product p;
-    FILE *fp = fopen(FILE_NAME, "r");
-    FILE *temp = fopen("temp.csv", "w");
-    int id, found = 0;
-
-    if (fp == NULL || temp == NULL) {
-        printf("Error opening file!\n");
-        return;
-    }
-
-    char header[100];
-    fgets(header, sizeof(header), fp);
-    fprintf(temp, "%s", header);
-
-    printf("Enter Product ID to delete: ");
-    scanf("%d", &id);
-
-    while (fscanf(fp, "%d,%[^,],%[^,],%f\n", &p.id, p.name, p.quantity, &p.price) != EOF) {
-        if (p.id != id) {
-            fprintf(temp, "%d,%s,%s,%.2f\n", p.id, p.name, p.quantity, p.price);
-        } else {
-            found = 1;
-        }
-    }
-
-    fclose(fp);
-    fclose(temp);
-    remove(FILE_NAME);
-    rename("temp.csv", FILE_NAME);
-
-    if (found)
-        printf("Product deleted successfully!\n");
-    else
-        printf("Product not found!\n");
-}
-
-void generateReport() {
-    struct Product p;
-    FILE *fp = fopen(FILE_NAME, "r");
-    float totalValue = 0;
-
-    if (fp == NULL) {
-        printf("No inventory data found!\n");
-        return;
-    }
-
-    printf("\n===== INVENTORY REPORT =====\n");
-    printf("%-10s %-20s %-15s %-10s\n", "ID", "Name", "Quantity", "Price");
-    printf("-----------------------------------------------------------\n");
-
-    char header[100];
-    fgets(header, sizeof(header), fp); 
-
-    while (fscanf(fp, "%d,%[^,],%[^,],%f\n", &p.id, p.name, p.quantity, &p.price) != EOF) {
-        printf("%-10d %-20s %-15s %-10.2f\n", p.id, p.name, p.quantity, p.price);
-        totalValue += p.price;
-    }
-
-    printf("-----------------------------------------------------------\n");
-    printf("Total Inventory Value (approx.): ₹%.2f\n", totalValue);
-    fclose(fp);
-}
-
-void openExcelFile() {
-    FILE *fp = fopen(FILE_NAME, "r");
-    if (fp == NULL) {
-        printf("Inventory file not found! Please add products first.\n");
-        return;
-    }
-    fclose(fp);
-
-    printf("Opening latest inventory in Excel...\n");
-    system("start excel.exe /r /n inventory.csv");
-}
-
-void openExcelIfExists() {
-    FILE *fp = fopen(FILE_NAME, "r");
-    if (fp != NULL) {
-        fclose(fp);
-        printf("Opening updated inventory in Excel...\n");
-        system("start excel.exe /r /n inventory.csv");
-    }
+int main() {
+    restoreInventory(); // Restore backup if main file missing
+    menu();
+    return 0;
 }
